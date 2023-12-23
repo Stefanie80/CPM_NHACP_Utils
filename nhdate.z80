@@ -1,0 +1,917 @@
+; #######################################
+; #										#
+; #	   NHACP Date and Time Utility      #
+; #			for CP/M Plus				#
+; #			by SolderGirl				#
+; #										#
+; #######################################
+
+; Assemble with ZMAC and link with LINK
+
+; #######################################
+; #	EQU's are only used at compile time	#
+; #	Since they have no influence on		#
+; #	the size or speed of the program,	#
+; #	there is no reason to spare here	#
+; #######################################
+
+; Config Equates
+true	equ -1
+false	equ not true
+cr		equ 13
+lf		equ 10
+delm	equ '$'
+debug	equ false
+
+; #######################################
+; #	Equates for calling BDOS			#
+; #######################################
+BDOS 	equ 0005h	; Call adress for BDOS
+recbuf	equ 0080h	; Default record buffer
+cmdtail	equ recbuf	; Command tail
+deffcb	equ 005Ch	; Default FCB
+lddrv	equ 0050h	; Drive we were loaded from
+
+	; BDOS function numbers
+BD_con_in		equ	1
+BD_con_out		equ	2
+BD_aux_in		equ	3
+BD_aux_out		equ	4
+BD_list_out		equ	5
+BD_direct_con	equ	6
+BD_aux_in_sta	equ	7
+BD_aux_out_sta	equ	8
+BD_print_string	equ	9
+BD_read_con_buf	equ	10
+BD_read_con_buf	equ	10
+BD_con_in_sta	equ	11
+BD_get_version	equ	12
+BD_disk_reset	equ	13
+BD_select_disk	equ	14
+BD_open_file	equ	15
+BD_close_file	equ	16
+BD_search_first	equ	17
+BD_search_next	equ	18
+BD_delete_file	equ	19
+BD_read_seq		equ	20
+BD_write_seq	equ	21
+BD_make_file	equ	22
+BD_rename_file	equ	23
+BD_login_vector	equ	24
+BD_current_disk	equ	25
+BD_set_dma		equ	26
+BD_alloc_vector	equ	27
+BD_write_prot	equ	28
+BD_ro_vector	equ	29
+BD_file_atribs	equ	30
+BD_get_DPB		equ	31
+BD_user_code	equ	32
+BD_read_random	equ	33
+BD_write_random	equ	34
+BD_comp_size	equ	35
+BD_set_record	equ	36
+BD_reset_drive	equ	37
+BD_access_drive	equ	38
+BD_free_drive	equ	39
+BD_write_w_fill	equ	40
+; 41 is MP/M only
+BD_lock_record	equ	42
+BD_unlock_rcrd	equ	43
+BD_multi_count	equ	44
+BD_error_mode	equ	45
+BD_dsk_free_spc	equ	46
+BD_chain_2_prgd	equ	47
+BD_flush_buffer	equ	48
+BD_access_SCB	equ	49
+BD_access_BIOS	equ	50
+; 51 .. 58 undocumented
+BD_load_overlay	equ	59
+BD_call_RSX		equ	60
+; 61 .. 97 undocumented
+BD_free_blocks	equ	98
+BD_trunc_file	equ	99
+BD_set_dir_lbl	equ	100
+BD_get_dir_lbl	equ	101
+BD_get_filemode	equ	102
+BD_write_XFCB	equ	103
+BD_set_date		equ	104
+BD_get_date		equ	105
+BD_set_password	equ	106
+BD_get_serial	equ	107
+BD_return_code	equ	108
+BD_console_mode	equ	109
+BD_output_delim	equ	110
+BD_print_block	equ	111
+BD_list_block	equ	112
+; 113 .. 151 undocumented
+BD_parse_filnm	equ	152
+
+T_SS	equ 080h
+T_ERR	equ 082h
+
+
+
+; #######################################
+; #	The following data structures will	#
+; #	end up in the resulting .COM file.	#
+; #	You can comment out or delete the   #
+; #	ones you don't need to save a few 	#
+; #	precious bytes.						#
+; #######################################
+
+
+	; Start Data Segment
+	DSEG
+; #######################################
+; #	Data Structure for BIOS calls		#
+; #######################################
+BIOSPB: 	
+func:	db 30	; BIOS function no.
+areg: 	db 0 	; A register contents
+creg:	db 1 	; C register contents
+breg: 	db 0 	; B register contents
+dereg:	dw 0 	; DE register contents
+hlreg:	dw 0 	; HL register contents
+
+; #######################################
+; #	Data Structures for File operations	#
+; #######################################
+FCB:	; For almost all file access
+dr:		db 0	; drive code
+fname:	db 0,0,0,0,0,0,0,0 	; 8 Bytes Filename
+ftype:	db 0,0,0 	; 3 Bytes Filetype
+ext:	db 0 	; current extent
+s12:	db 0,0 	; reserved
+rc:		db 0	; record count
+d0n:	ds 15	; 15 Bytes reserved
+crec:	db 0 	; current record
+r0:		db 0,0,0; 3 Bytes, 18 bit record adress, LSB first.
+
+PFCB:	; For parsing filenames
+		dw .linebuf+2	; input string
+		dw deffcb		; FCB
+		
+SCBPB:
+OFFSET:	db 05Ch
+SSET:	db 0FFh
+VAL:	dw 000
+
+; #######################################
+; #	String declarations					#
+; #######################################
+str_crlf: db cr,lf,delm
+str_init: db 'NHACP Date Tool v0.1',cr,lf,delm
+str_iner: db 'Internal Error',cr,lf,delm
+str_rerr: db 'Server Error',cr,lf,delm
+str_timo: db 'Server Timout',cr,lf,delm
+str_wrvr: db 'Sorry, CP/M 3 only.',cr,lf,delm
+
+; #######################################
+; #	Stack and Buffers					#
+; #######################################
+.linebuf:	ds 16
+.oldstk: 	ds 64
+.stack:	 	dw 0
+
+SID:		db 0
+msgbuf:		ds 64
+strbuf:		ds 255
+
+; DATE-TIME structure
+;| date | char[8] | Current date in YYYYMMDD format
+year:		ds 4
+month:		ds 2
+day:		ds 2
+;| time | char[6] | Current time in HHMMSS format
+hour:		ds 2
+minut:		ds 2
+secnd:		ds 2
+
+;        /* jan feb mar apr may jun jul aug sep oct nov dec */
+;        (   31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31),
+;        month$days (*) word data
+;        /* jan feb mar apr may jun jul aug sep oct nov dec */
+dayoff: dw  000,031,059,090,120,151,181,212,243,273,304,334
+cpmpls:	db 0
+isvect:	dw 0
+
+	; Start Code Segment
+	CSEG
+; #######################################
+; #	Code start							#
+; #######################################
+
+	; Set up Stack:
+ld (.oldstk),sp
+ld sp,.stack
+
+	ld c,BD_get_version
+	call BDOS
+	ld a,l
+	ld (cpmpls),a
+	cp 031h
+	jp nz,wrongver
+	
+	ld c,BD_print_string	; Print header
+	ld de,str_init
+	call BDOS	
+	; Insert actual program code here:
+	
+; Send HELLO
+	call nh_hello
+; Read Response
+	call read_msg
+; Message has been Read into msgbuf
+; Now evaluate
+	ld hl,msgbuf
+	ld a,(hl)
+;	Type should be T_SS or T_ERR
+	cp T_ERR
+	jp z,read_err
+	cp T_SS
+	jp nz,int_err
+; If we get here, print string from server
+	;call puts_crlf
+	ld hl,msgbuf+4
+	call prn_nhstr
+	call puts_crlf
+; Set Session ID
+	ld hl,msgbuf+1
+	ld a,(hl)
+	ld (SID),a
+
+; Get DATE-TIME
+	call nh_date
+	call read_msg
+	call prn_dtim
+	call puts_crlf
+	
+	ld a,(cmdtail+2)
+	cp 'S'
+	jr z,setit
+	cp 's'
+	jr z,setit
+	jr godby
+
+setit:	
+	call conv_date
+; make sure we are on CP/M 3
+	; ld c,BD_get_version
+	; call BDOS
+	; ld a,l
+	; cp 031h
+	; jp nz,wrongver
+; Set CP/M internal clock
+	ld c,BD_set_date
+	ld de,year
+	call BDOS
+; Second
+	ld de,msgbuf+13
+	ld a,(de)
+	sub '0'
+	rla
+	rla
+	rla
+	rla
+	ld b,a
+	inc de
+	ld a,(de)
+	sub '0'
+	and 0Fh
+	or b
+if debug
+	call hexa
+endif
+	daa
+	ld (VAL),a
+	ld c,BD_access_SCB
+	ld de,SCBPB
+	call BDOS
+	; daa
+	; ld (year+2),a
+	; SCB+5Ch
+	
+godby:	
+; Send GOODBYE
+	call nh_goodbye
+
+	
+	; All done, clean up:
+jp .end
+; #######################################
+; #	Local subroutines go here:			#
+; #######################################
+
+instat:
+	ld (cpmpls),a
+	or a
+	jr z,notplus
+	; CP/M 3
+	ld c,BD_aux_in_sta
+	call BDOS
+	notplus:
+	
+ret
+
+wrongver:
+	ld c,BD_print_string
+	ld de,str_wrvr
+	call BDOS	
+jp .end
+
+prn_dtim:
+	ld hl,msgbuf+1
+	ld b,4
+	yrlp:
+	push bc
+	ld a,(hl)
+	ld e,a
+	ld c,BD_con_out
+	push hl
+	call BDOS
+	pop HL
+	inc HL
+	pop bc
+	djnz yrlp
+	ld c,BD_con_out
+	ld e,'-'
+	call BDOS
+
+	ld hl,msgbuf+5
+	ld b,2
+	mnlp:
+	push bc
+	ld a,(hl)
+	ld e,a
+	ld c,BD_con_out
+	push hl
+	call BDOS
+	pop HL
+	inc HL
+	pop bc
+	djnz mnlp
+	ld c,BD_con_out
+	ld e,'-'
+	call BDOS
+
+	ld hl,msgbuf+7
+	ld b,2
+	dylp:
+	push bc
+	ld a,(hl)
+	ld e,a
+	ld c,BD_con_out
+	push hl
+	call BDOS
+	pop HL
+	inc HL
+	pop bc
+	djnz dylp
+	
+	call puts_crlf
+	ld hl,msgbuf+9
+	ld b,2
+	hrlp:
+	push bc
+	ld a,(hl)
+	ld e,a
+	ld c,BD_con_out
+	push hl
+	call BDOS
+	pop HL
+	inc HL
+	pop bc
+	djnz hrlp
+	ld c,BD_con_out
+	ld e,':'
+	call BDOS
+	ld hl,msgbuf+11
+	ld b,2
+	minlp:
+	push bc
+	ld a,(hl)
+	ld e,a
+	ld c,BD_con_out
+	push hl
+	call BDOS
+	pop HL
+	inc HL
+	pop bc
+	djnz minlp
+	ld c,BD_con_out
+	ld e,':'
+	call BDOS
+	ld hl,msgbuf+13
+	ld b,2
+	seclp:
+	push bc
+	ld a,(hl)
+	ld e,a
+	ld c,BD_con_out
+	push hl
+	call BDOS
+	pop HL
+	inc HL
+	pop bc
+	djnz seclp
+ret
+
+conv_date:
+; Convert ASCII Date/Time to numeric
+; Year
+	ld de,msgbuf+1
+	ld a,(de)
+	sub '0'
+if debug
+	push af
+	call puts_crlf
+	pop af
+	call hexa
+endif	
+	ld b,a
+	ld de,1000
+	ld hl,0
+	call muladd ; HL = HL + (DE x B)
+	ld de,msgbuf+2
+	ld a,(de)
+	sub '0'
+if debug
+	call hexa
+endif	
+	ld b,a
+	ld de,100
+	call muladd ; HL = HL + (DE x B)
+	ld de,msgbuf+3
+	ld a,(de)
+	sub '0'
+if debug
+	call hexa
+endif	
+	ld b,a
+	ld de,10
+	call muladd ; HL = HL + (DE x B)
+	ld de,msgbuf+4
+	ld a,(de)
+	sub '0'
+if debug
+	call hexa
+endif	
+	ld c,a
+	ld b,0
+	add hl,bc
+	ld (year),hl
+if debug
+	ld c,BD_con_out
+	ld e,'('
+	call BDOS
+	ld hl,(year)
+	call hexhl
+	ld c,BD_con_out
+	ld e,')'
+	call BDOS
+endif
+
+; Month
+	ld de,msgbuf+5
+	ld a,(de)
+	sub '0'
+if debug
+	call hexa
+endif	
+	ld b,a
+	ld de,10
+	ld hl,0
+	call muladd ; HL = HL + (DE x B)
+	ld de,msgbuf+6
+	ld a,(de)
+	sub '0'
+if debug
+	call hexa
+endif	
+	ld c,a
+	ld b,0
+	add hl,bc
+if debug
+	call hexhl
+endif	
+	ld a,l
+	ld (month),a
+; Day
+	ld de,msgbuf+7
+	ld a,(de)
+	sub '0'
+if debug
+	call hexa
+endif	
+	ld b,a
+	ld de,10
+	ld hl,0
+	call muladd ; HL = HL + (DE x B)
+	ld de,msgbuf+8
+	ld a,(de)
+	sub '0'
+if debug
+	call hexa
+endif	
+	ld c,a
+	ld b,0
+	add hl,bc
+if debug
+	call hexhl
+endif	
+	ld a,l
+	ld (day),a
+
+if debug
+	call puts_crlf
+	ld a,(day)
+	call hexa
+	ld c,BD_con_out
+	ld e,'.'
+	call BDOS
+	ld a,(month)
+	call hexa
+	ld c,BD_con_out
+	ld e,'.'
+	call BDOS
+	ld a,(year+1)
+	call hexa
+	ld a,(year)
+	call hexa
+	call puts_crlf
+endif	
+
+; Convert numeric date to number of days since 1.1.1978
+	ld hl,(year)
+if debug
+	call hexhl
+endif
+	ld de,1978
+	sbc hl,de
+	push hl
+	; we will just assume the number of years to be >255
+	; this will break in 2233!
+	ld b,l
+	ld de,365
+	ld hl,0
+	call muladd ; HL = HL + (DE x B)
+	push hl
+if debug
+	push hl
+	call puts_crlf
+	pop hl
+	call hexhl
+endif
+	pop de
+	pop hl
+	; determine number of leap days
+	scf
+	ccf
+	rr h
+	rr l
+	scf
+	ccf
+	rr h
+	rr l
+	add hl,de
+	; year has been converted
+	ld (year),hl
+	; now add the value for the month
+	ld hl,dayoff
+	ld b,0
+	ld a,(month)
+	dec a
+	ld c,a
+	add hl,bc
+	add hl,bc
+	ld a,(hl)
+	ld c,a
+	inc hl
+	ld a,(hl)
+	ld b,a
+if debug
+	push bc
+	push bc
+	call puts_crlf
+	pop hl
+	call hexhl
+	pop bc
+endif	
+	ld hl,(year)
+	add hl,bc
+	; and finally add the day value
+	ld b,0
+	ld a,(day)
+	ld c,a
+	add hl,bc
+	; Date should be completely converted now!
+	ld (year),hl
+
+; Hour
+	ld de,msgbuf+9
+	ld a,(de)
+	sub '0'
+	rla
+	rla
+	rla
+	rla
+	ld b,a
+	inc de
+	ld a,(de)
+	sub '0'
+	and 0Fh
+	or b
+if debug
+	push af
+	call puts_crlf
+	pop af
+	call hexa
+endif
+	daa
+	ld (year+2),a
+; Minute
+	ld de,msgbuf+11
+	ld a,(de)
+	sub '0'
+	rla
+	rla
+	rla
+	rla
+	ld b,a
+	inc de
+	ld a,(de)
+	sub '0'
+	and 0Fh
+	or b
+if debug
+	call hexa
+endif
+	daa
+	ld (year+3),a
+ret
+
+muladd:		; HL = HL + (DE x B)
+	xor a
+	or b
+	ret z
+	add hl,de
+	djnz muladd
+ret
+
+nh_goodbye:
+;	REQ
+	ld e,08Fh
+	ld c,BD_aux_out
+	call BDOS
+;	SID
+	ld a,(SID)
+	ld e,a
+	ld c,BD_aux_out
+	call BDOS
+;	Length=01h,00h
+	ld e,1	; LSB
+	ld c,BD_aux_out
+	call BDOS
+	ld e,0	; MSB
+	ld c,BD_aux_out
+	call BDOS
+;	Type=0xEF 
+	ld e,0EFh
+	ld c,BD_aux_out
+	call BDOS
+ret
+
+nh_date:
+;	REQ
+	ld e,08Fh
+	ld c,BD_aux_out
+	call BDOS
+;	SID
+	ld a,(SID)
+	ld e,a
+	ld c,BD_aux_out
+	call BDOS
+;	Length=01h,00h
+	ld e,1	; LSB
+	ld c,BD_aux_out
+	call BDOS
+	ld e,0	; MSB
+	ld c,BD_aux_out
+	call BDOS
+;	Type=0x04 
+	ld e,4
+	ld c,BD_aux_out
+	call BDOS
+ret
+
+nh_hello:
+;	REQ
+	ld e,08Fh
+	ld c,BD_aux_out
+	call BDOS
+	;	SID=0
+	ld e,0
+	ld c,BD_aux_out
+	call BDOS
+;	Length=08h,00h
+	ld e,8	; LSB
+	ld c,BD_aux_out
+	call BDOS
+	ld e,0	; MSB
+	ld c,BD_aux_out
+	call BDOS
+
+;	Type=0
+	ld e,0
+	ld c,BD_aux_out
+	call BDOS
+;	"ACP"
+	ld e,'A'
+	ld c,BD_aux_out
+	call BDOS
+	ld e,'C'
+	ld c,BD_aux_out
+	call BDOS
+	ld e,'P'
+	ld c,BD_aux_out
+	call BDOS
+;	Version=0001h
+	ld e,1	; LSB
+	ld c,BD_aux_out
+	call BDOS
+	ld e,0	; MSB
+	ld c,BD_aux_out
+	call BDOS
+;	Options=0000h
+	ld e,0	; LSB
+	ld c,BD_aux_out
+	call BDOS
+	ld e,0	; MSB
+	ld c,BD_aux_out
+	call BDOS
+ret
+
+prn_nhstr:
+	ld a,(hl)
+	ld b,a
+	ld c,BD_con_out
+	inc hl
+if debug
+	push HL
+	push bc
+	call hexa
+	call puts_crlf
+	pop bc
+	pop hl
+endif
+	prnlp:
+	push bc
+	ld a,(hl)
+	ld e,a
+	push hl
+	call BDOS
+	pop hl
+	inc HL
+	pop bc
+	djnz prnlp
+ret
+
+read_msg:
+	ld bc,0
+	msgwait:
+	dec bc
+	push bc
+	ld c,BD_aux_in_sta
+	call BDOS
+	pop bc
+	or a
+	jr nz,readit
+	ld a,b
+	or c
+	jr nz,msgwait
+	jp timeout
+	readit:
+;	2 bytes message size
+	ld c,BD_aux_in
+	call BDOS
+if debug
+	call hexa
+endif
+	ld c,a
+	push bc
+	ld c,BD_aux_in
+	call BDOS
+if debug
+	push af
+	call hexa
+	ld c,BD_con_out
+	ld e,':'
+	call BDOS
+	pop af
+endif
+	pop bc
+	ld b,a
+	ld hl,msgbuf
+	msgloop:
+	push bc
+	push hl
+	ld c,BD_aux_in
+	call BDOS
+if debug
+	call hexa
+endif
+	pop hl
+	ld (hl),a
+	inc hl
+	pop bc
+	dec bc
+	ld a,b
+	or c
+	jr nz,msgloop
+if debug
+	call puts_crlf
+endif
+ret
+
+read_err:
+	; The Server reports an error
+	ld c,BD_print_string
+	ld de,str_rerr
+	call BDOS	
+	; Get 16-bit error code
+	; Request full error message
+	; Read response
+	; Print error message to console
+jp .end
+
+int_err:
+	; Some internal error ocurred
+	ld c,BD_print_string
+	ld de,str_iner
+	call BDOS	
+jp .end
+
+hexhl:
+	push hl
+	ld a,h
+	call hexa
+	ld a,l
+	call hexa
+	pop hl
+ret
+
+hexa:
+	push hl
+	push af
+	srl	a
+	srl	a
+	srl	a
+	srl	a
+	call .hexdump_nib
+	pop af
+	push af
+	and	00fh
+	call .hexdump_nib
+	pop	af
+	pop hl
+	ret
+
+.hexdump_nib:
+	add	'0'
+	cp	'9'+1
+	jp	m,.hexdump_num
+	add	'A'-'9'-1
+.hexdump_num:
+	ld	e,a
+	ld 	c,BD_con_out
+	jp	BDOS	   ; tail
+
+puts_crlf:
+ld e,cr
+ld c,BD_con_out
+call BDOS
+ld e,lf
+ld c,BD_con_out
+call BDOS
+ret
+
+timeout:
+	ld c,BD_print_string	; Print header
+	ld de,str_timo
+	call BDOS	
+jp .end
+
+; #######################################
+; #	Cleanup								#
+; #######################################
+.end:	
+push af
+;ld c,09h	; Print newline
+;ld de,str_crlf
+;call BDOS	
+pop af
+;restore stack
+ld sp,(.oldstk)
+
+jp 0
+end
